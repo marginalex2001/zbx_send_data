@@ -6,70 +6,91 @@ import pandas as pd
 def main():
     table = pd.read_excel(TABLE)
     a = ZabbixAddhost(API_TOKEN,table,ZABBIX_IP)
+    # a.prnt()
     a.create_host()
 
 class ZabbixAddhost():
     def __init__(self, api_token, table, api_url):
         self.__api_token = api_token
         self.__api_url = api_url
-        # self.__table = table
-        self.__hosts = table.to_dict(orient='records')
+        self.__table = table.fillna('')
+        self.__hosts = self.__table.to_dict(orient='records')
         self.__zbx = ZabbixAPI(url=self.__api_url)
 
         self.__zbx.login(token=self.__api_token)
 
     def prnt(self):
+        # print(self.__table)
+        # print(self.__hosts)
+        # print (self.__create_json_to_add_host())
         self.__create_json_to_add_host()
         pass
+        # print(API_TOKEN)
     
     def create_host(self):
         data = self.__create_json_to_add_host()
         for host in data:
+            # print(f"{host['host']}\n")
+            # id = self.__zbx.host.create(host)['hostids']
             try:
-                print(self.__zbx.host.create(host))                                            #Печатает ID хоста, потом надо будет записывать их в таблицу О_о
+                id = self.__zbx.host.create(host)                                           #Печатает ID хоста, потом надо будет записывать их в таблицу О_о
+                id = id['hostids'][0]
+                self.__table.loc[self.__table['Hostname'] == host['host'], 'hostid'] = int(id)
+                
             except Exception as e:
                 print(f"An error occurred when attempting to create items: {str(e)}")
+        try:
+            self.__table.to_excel(TABLE, index=False)
+        except Exception as e:
+            print(f"An error while renew table: {str(e)}")
+            try:
+                self.__table.to_excel("Error.xlsx", index=False)
+            except Exception as err:
+                print(f"FATAL ERROR WHILE WRITTING TABLE. NO BACKUP")
+
 
     def __create_json_to_add_host(self):
         data = []
         for host in self.__hosts:                                                                                      #Добавить проверку на NaN; добавить проверку на SNMP и добавлять community
-            description = str(
-                f"Model: {host['Host model']}\n"
-                f"MAC: {host['MAC']}\n"
-                f"Rack: {host['Rack']}\n"
-                f"S/N: {host['Serial number']}\n"
-                f"Inventory: {host['Inventory number']}\n"
-            )
+            if host['hostid'] == '':
+                description = str(
+                    f"Model: {host['Host model']}\n"
+                    f"MAC: {host['MAC']}\n"
+                    f"Rack: {host['Rack']}\n"
+                    f"S/N: {host['Serial number']}\n"
+                    f"Inventory: {host['Inventory number']}\n"
+                )
 
-            host_sum = {
-                "host" : host['Hostname'],                                                                      #Имя хоста
-                "groups" : self.__groups_name_to_ID(host['Group']),
-                "status" : host['Status'],                                                                      #Статус (0 - активирован/1 - деактивирован) добавить в таблицу enabled/disabled
-                "interfaces": [
-                    {
-                        "type": host['Type (Agent/SNMP)'],                                                      #1 - agent, 2 - SNMP; добавить текстовое описание
-                        "main": 1,                          
-                        "useip": 1,
-                        "ip": host["IP address"],                                                               #IP адрес 
-                        "dns": "",                                                                              #DNS имя
-                        "port": host['Port']                                                                    #Порт мониторинга
-                    }
-                ],
-                "templates": self.__templates_name_to_ID(host['Template']),
-                "inventory_mode": 1,                                                                                    #Possible values: '-1' - (default) disabled; '0' - manual; '1' - automatic.
-                "inventory":{
-                        "macaddress_a": str(host['MAC']),                                                               #MAC адрес
-                        "type": str(host['Host type']),                                                                 #Тип хоста (сервер/свитч)
-                        "name": str(host['Hostname']),                                                                  #Имя (для инвентаризации)
-                        "os" : str(host['OS']),                                                                         #ОС
-                        "tag" : str(host['Inventory number']),                                                          #Инв. номер (Тэг)
-                        "location" : str(host['Rack']),                                                                 #Местоположение
-                        "model" : str(host['Host model']),                                                              #Модель
-                        "serialno_a" : str(host['Serial number'])                                                       #Серийник
-                    },
-                "description" : description
-            }
-            data.append(host_sum)
+                host_sum = {
+                    "host" : host['Hostname'],                                                                                  #Имя хоста
+                    "groups" : self.__groups_name_to_ID(host['Group']),
+                    "status" : f"{0 if host['Status'] == 0 or host['Status'] == 'Enabled' else 1}",                     #Статус (0 - активирован/1 - деактивирован) добавить в таблицу enabled/disabled  host['Status']
+                    "interfaces": [
+                        {
+                            "type": f"{2 if host['Type (Agent/SNMP)'] == 2 or host['Type (Agent/SNMP)'] == 'SNMP' else 1}",     #1 - agent, 2 - SNMP; добавить текстовое описание     host['Type (Agent/SNMP)']
+                            "main": 1,                          
+                            "useip": f"{0 if host['DNS'] != '' else 1}",                                                        #0 - vonnect via DNS; 1 - connect via IP 
+                            "ip": host['IP address'],                                                                           #IP адрес 
+                            "dns": host['DNS'],                                                                                 #DNS имя
+                            "port": host['Port']                                                                                #Порт мониторинга
+                        }
+                    ],
+                    "templates": self.__templates_name_to_ID(host['Template']),
+                    "inventory_mode": 1,                                                                                    #Possible values: '-1' - (default) disabled; '0' - manual; '1' - automatic.
+                    "inventory":{
+                            "macaddress_a": str(host['MAC']),                                                               #MAC адрес
+                            "type": str(host['Host type']),                                                                 #Тип хоста (сервер/свитч)
+                            "name": str(host['Hostname']),                                                                  #Имя (для инвентаризации)
+                            "os" : str(host['OS']),                                                                         #ОС
+                            "tag" : str(host['Inventory number']),                                                          #Инв. номер (Тэг)
+                            "location" : str(host['Rack']),                                                                 #Местоположение
+                            "model" : str(host['Host model']),                                                              #Модель
+                            "serialno_a" : str(host['Serial number'])                                                       #Серийник
+                        },
+                    "description" : description
+                }
+                # print(str(host_sum) + "\n")
+                data.append(host_sum)
         return data
 
     def __groups_name_to_ID(self, groups):
