@@ -4,10 +4,13 @@ from dotenv import load_dotenv
 import pandas as pd
 
 def main():
+    load_dotenv()
+    API_TOKEN = os.getenv("API_TOKEN")                                              #Получение токена из .env
+    ZABBIX_IP = os.getenv("ZABBIX_URL")                                             #Получение IP адреса из .env
+    TABLE = os.getenv("TABLE_NAME")                                                 #Получение имени таблицы из .env
     table = pd.read_excel(TABLE)
     a = ZabbixAddhost(API_TOKEN,table,ZABBIX_IP)
-    # a.prnt()
-    a.create_host()
+    a.create_host(TABLE)
 
 class ZabbixAddhost():
     def __init__(self, api_token, table, api_url):
@@ -20,27 +23,21 @@ class ZabbixAddhost():
         self.__zbx.login(token=self.__api_token)
 
     def prnt(self):
-        # print(self.__table)
-        # print(self.__hosts)
-        # print (self.__create_json_to_add_host())
-        self.__create_json_to_add_host()
         pass
-        # print(API_TOKEN)
     
-    def create_host(self):
+    def create_host(self, tablename):
         data = self.__create_json_to_add_host()
         for host in data:
-            # print(f"{host['host']}\n")
-            # id = self.__zbx.host.create(host)['hostids']
             try:
                 id = self.__zbx.host.create(host)                                           #Печатает ID хоста, потом надо будет записывать их в таблицу О_о
                 id = id['hostids'][0]
+                print(f"Host created. Host id is {id}")
                 self.__table.loc[self.__table['Hostname'] == host['host'], 'hostid'] = int(id)
                 
             except Exception as e:
                 print(f"An error occurred when attempting to create items: {str(e)}")
         try:
-            self.__table.to_excel(TABLE, index=False)
+            self.__table.to_excel(tablename, index=False)
         except Exception as e:
             print(f"An error while renew table: {str(e)}")
             try:
@@ -52,7 +49,7 @@ class ZabbixAddhost():
     def __create_json_to_add_host(self):
         data = []
         for host in self.__hosts:                                                                                      #Добавить проверку на NaN; добавить проверку на SNMP и добавлять community
-            if host['hostid'] == '':
+            if host['hostid'] == '' and (host['DNS'] != '' or host['IP address'] != ''):
                 description = str(
                     f"Model: {host['Host model']}\n"
                     f"MAC: {host['MAC']}\n"
@@ -64,7 +61,7 @@ class ZabbixAddhost():
                 host_sum = {
                     "host" : host['Hostname'],                                                                                  #Имя хоста
                     "groups" : self.__groups_name_to_ID(host['Group']),
-                    "status" : f"{0 if host['Status'] == 0 or host['Status'] == 'Enabled' else 1}",                     #Статус (0 - активирован/1 - деактивирован) добавить в таблицу enabled/disabled  host['Status']
+                    "status" : f"{0 if host['Status'] == 1 or host['Status'] == 'Enabled' else 1}",                             #Статус (0 - активирован/1 - деактивирован) добавить в таблицу enabled/disabled  host['Status']
                     "interfaces": [
                         {
                             "type": f"{2 if host['Type (Agent/SNMP)'] == 2 or host['Type (Agent/SNMP)'] == 'SNMP' else 1}",     #1 - agent, 2 - SNMP; добавить текстовое описание     host['Type (Agent/SNMP)']
@@ -89,8 +86,9 @@ class ZabbixAddhost():
                         },
                     "description" : description
                 }
-                # print(str(host_sum) + "\n")
                 data.append(host_sum)
+            if (host['DNS'] == '' and host['IP address'] == ''):
+                print(f"Error while create host: no such IP-address or DNS for {host['Hostname']} [IP Address: {host['IP address']}; DNS: {host['DNS']}]")
         return data
 
     def __groups_name_to_ID(self, groups):
@@ -135,8 +133,4 @@ class ZabbixAddhost():
         pass
 
 if __name__ == "__main__":
-    load_dotenv()
-    API_TOKEN = os.getenv("API_TOKEN")                                              #Получение токена из .env
-    ZABBIX_IP = os.getenv("ZABBIX_URL")                                             #Получение IP адреса из .env
-    TABLE = os.getenv("TABLE_NAME")                                                 #Получение имени таблицы из .env
     main()
