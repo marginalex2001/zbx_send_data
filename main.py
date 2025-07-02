@@ -2,75 +2,105 @@ from zabbix_utils import ZabbixAPI
 import os
 import pandas as pd
 import json
+from termcolor import colored
 
 def main():
     API_TOKEN = os.getenv("API_TOKEN")                                              #Получение токена из .env
     ZABBIX_IP = os.getenv("ZABBIX_URL")                                             #Получение IP адреса из .env
     TABLE = os.getenv("TABLE_NAME")                                                 #Получение имени таблицы из .env
-    print(TABLE)
     try:
         table = pd.read_excel(TABLE)
     except Exception as e:
         print(f"Error: {e} \n---BREAK---")
         return 1
-    a = ZabbixAddhost(API_TOKEN,ZABBIX_IP,table,TABLE)
+    a = ZabbixAddHost(api_token=API_TOKEN,api_url=ZABBIX_IP,table=table,tablename=TABLE)
     a.get_hosts()
 
-class ZabbixAddhost():
-    def __init__(self, api_token, api_url, table, tablename):
-        self.__api_token = api_token
-        self.__api_url = api_url
-        self.__table = table.fillna('')
-        self.__hosts = self.__table.to_dict(orient='records')
+class ZabbixAddHost():
+    def __init__(self, api_token: str, api_url: str, tablename: str = "hosts.xlsx", table: pd.DataFrame | None = None):
+        """
+        Class for create zabbix hosts from `.xlsx` files and and vice versa\n
+        `api_token` - Your ZABBIX API token, required for create\n
+        `api_url` - IP-address of Your ZABBIX SERVER *(the address is specified without the protocol, but with the port and path indicated, for example: `127.0.0.1:8000/zabbix`)*, required for create\n
+        `tablename` - Name of Your .xlsx file. **Must contain file extention.** *For example: `hosts.xlsx`*, optional for create\n
+        `table` - Pandas dataframe with your hosts. Must contain the following columns: *'Hostname', 'Group', 'Status', 'IP address', 'DNS', 'Port', 'Type (Agent/SNMP)', 'Community', 'SNMP version', 'Template', 'Host type', 'Host model', 'OS', 'Inventory number', 'MAC', 'Rack', 'Serial number', 'hostid'*. Optional for create
+        """
+        self.__api_token = str(api_token)
+        self.__api_url = str(api_url)
+        self.__tablename = str(tablename)
+        if table is None:
+            self.__table = self.__create_table()
+            print(f"Created table {self.__tablename}")
+        elif isinstance(table, pd.DataFrame):
+            self.__table = table.fillna('')
+        else:
+            msg = f'ERROR, TABLE "{tablename.upper()}" IS NOT PANDAS DATAFRAME'
+            print(f"{'-'*len(msg)}\n{colored(msg, 'red')}\n{'-'*len(msg)}")
+            exit()
+        self.__hosts: list = self.__table.to_dict(orient='records')
         self.__zbx = ZabbixAPI(token=self.__api_token, url=self.__api_url)
         self.__groupids = self.__groups_names_to_IDs()
         self.__templateids = self.__templates_names_to_IDs()
-        self.__tablename = tablename
+        
 
+    def __create_table(self) -> pd.DataFrame:
+        """
+        Creating an `.xlsx` file with the fields needed for the `ZabbixAddHost` class
+        """
+        cols = ['Hostname', 'Group', 'Status', 'IP address', 'DNS', 'Port', 'Type (Agent/SNMP)', 'Community', 'SNMP version', 'Template', 'Host type', 'Host model', 'OS', 'Inventory number', 'MAC', 'Rack', 'Serial number', 'hostid']
+        df = pd.DataFrame(columns=cols)
+        try:
+            df.to_excel(self.__tablename, index=False)
+        except Exception as e:
+            self.__table_write_exception(e=e)
+        return df
+    
+    def __table_write_exception(self, e: Exception):
+            filename = 'error.txt'
+            try:
+                with open(filename, 'w') as file:
+                    file.write(self.__table.to_string())
+                msg = f"Error: {e}, dataframe written in {filename}"
+            except Exception as f:
+                msg = f"Error: {e}, dataframe not written: {f}"
+            print(colored(msg, 'red'))
+        
     def get_hosts(self):
         """
-        Hostname,       Group,          Status
-        IP Address,     DNS,            Port
-        Inerface type,  (community),    (SNMP ver)
-        Template,       Hostid
-        Inventory [
-        Type, Model, OS, Inv, MAC, Location, S/N
-        ]
+        Get list of hosts from zabbix server, and write it to `.xlsx`
         """
-        src_data = self.__zbx.host.get ({
-            #           Hostname  hostid    
-            "output" : ["name", "hostid", "status"],
-            #                   groupid
-            "selectHostGroups" : ["name"],
-            #                       Template
-            "selectParentTemplates" : ["name"],
+        src_data: list = self.__zbx.host.get ({                
+            "output" : ["name", "hostid", "status"],            # Hostname,  hostid, status
+            "selectHostGroups" : ["name"],                      # Hostgroup name            
+            "selectParentTemplates" : ["name"],                 # Host Template
             "selectInterfaces" : ["ip", "dns", "port",
-                                # SNMP/Agent,   if SNMP, community and version
-                                  "type", "details"],
+                                  "type", "details"],           # SNMP/Agent,   if SNMP -> community and version
             "selectInventory": ["os", "macaddress_a", "model", "tag", "type", "serialno_a", "location"]
         })
         to_table_data = self.__preparing_to_xlsx(src=src_data)
         df_new_data = pd.DataFrame(to_table_data)
         self.__table['hostid'] = self.__table['hostid'].astype(int)
         df_new_data['hostid'] = df_new_data['hostid'].astype(int)
-        df_new_data_unique = df_new_data[~df_new_data['hostid'].isin(self.__table['hostid'])]
-        if df_new_data_unique.empty ==False:
+        df_new_data_unique = df_new_data[~df_new_data['hostid'].isin(self.__table['hostid'])]       #if hostid in self.__table exist, record remove
+        if df_new_data_unique.empty == False:
             self.__table = pd.concat([self.__table, df_new_data_unique], ignore_index=True)
-            self.__table.to_excel(self.__tablename, index=False)
+            try:
+                self.__table.to_excel(self.__tablename, index=False)
+            except Exception as e:
+                self.__table_write_exception(e)
         
-
-
-    def __preparing_to_xlsx(self, src):
+    def __preparing_to_xlsx(self, src: list) -> list:
+        """
+        `src` conversion to new format for writing to `.xlsx` table
+        """
         result = []
-        # print(json.dumps(src,sort_keys=True, indent=4))
         for host in src:
             hostid, name, status = host['hostid'], host['name'], str()
             if host['status'] == '0':
                 status = 'Enabled'
             elif host['status'] == '1':
                 status = 'Disabled'
-            hostgroups = {g['name'] for g in host['hostgroups']} # host['hostgroups']
-            # print(f"{hostgroups_str}\n{hostid}\n{name}\n{status}\n\n") #{host['inventory'] if host['inventory'] else 'oups'}\n")
+            hostgroups = {g['name'] for g in host['hostgroups']} 
             ips, int_type, ports, dnss = [], [], [], []
             snmp_community, snmp_version = [], []
             if host['interfaces']:
@@ -93,9 +123,6 @@ class ZabbixAddhost():
                     if interface['details']:
                         snmp_community.append(interface['details']['community'])
                         snmp_version.append(interface['details']['version'])
-                        # for detail in interface['details']:
-                        #     print(detail['community'])
-            # print(f"{ips}, {dnss}, {ports}, {int_type}, {snmp_community}, {snmp_version}, {status} \n")
             if host['parentTemplates']:
                 hosttemplates = {t['name'] for t in host['parentTemplates']}
             hosttemplates_str = ", ".join(hosttemplates) if hosttemplates else ''
@@ -116,7 +143,6 @@ class ZabbixAddhost():
                 inventory_data['os'] = inventory['os'] if inventory['os'] else ''
                 inventory_data['macaddress_a'] = inventory['macaddress_a'] if inventory['macaddress_a'] else ''
                 inventory_data['location'] = inventory['location'] if inventory['location'] else ''
-                # print(inventory_data)
 
             result.append({
                 "Hostname": name,
@@ -132,23 +158,22 @@ class ZabbixAddhost():
                 "Host type": inventory_data['type'] if host['inventory'] else '',
                 "Host model": inventory_data['model'] if host['inventory'] else '',
                 "OS": inventory_data['os'] if host['inventory'] else '',
-                "Inventory number": inventory_data['tag'] if host['inventory'] else '',  # Используем 'tag' для поля Inv
+                "Inventory number": inventory_data['tag'] if host['inventory'] else '',  # Используем 'tag' для поля Inventory number
                 "MAC": inventory_data['macaddress_a'] if host['inventory'] else '',
                 "Rack": inventory_data['location'] if host['inventory'] else '',
                 "Serial number": inventory_data['serialno_a'] if host['inventory'] else '',
                 "hostid": hostid
             })
         return result
-
-    def tests(self):
-        print(self.__hosts)
-        self.__data_to_json()
     
     def create_host(self):
+        """
+        Creating host on zabbix server from `.xlsx` file
+        """
         data = self.__data_to_json()
         for host in data:
             try:
-                id = self.__zbx.host.create(host)                                           #Печатает ID хоста, потом надо будет записывать их в таблицу О_о
+                id = self.__zbx.host.create(host)
                 id = id['hostids'][0]
                 print(f"Host created. Host id is {id}")
                 self.__table.loc[self.__table['Hostname'] == host['host'], 'hostid'] = int(id)
@@ -158,13 +183,12 @@ class ZabbixAddhost():
         try:
             self.__table.to_excel(self.__tablename, index=False)
         except Exception as e:
-            print(f"An error while renew table: {str(e)}")
-            try:
-                self.__table.to_excel("Error.xlsx", index=False)
-            except Exception as err:
-                print(f"FATAL ERROR WHILE WRITTING TABLE. NO BACKUP")
+            self.__table_write_exception(e)
 
-    def __data_to_json(self):
+    def __data_to_json(self) -> list:
+        """
+        Get values from `self.__hosts` and create valid JSON for Zabbix API
+        """
         hosts_to_create = []
         for host in self.__hosts:
             description = str(
@@ -200,7 +224,14 @@ class ZabbixAddhost():
         # print(json.dumps(hosts_to_create, sort_keys=True, indent=2))
         return hosts_to_create
 
-    def __name_to_id(self, dict, data, type):
+    def __name_to_id(self, dict: dict, data: str, type: str) -> list:
+        """
+        Allows you to translate the ID of a value into its name.\n
+        `dict` - dict key-value: `"name" : "ID"`\n
+        `data` - Item names from `.xlsx`\n
+        `type` - datatype (`templateid` or `hostid`)\n
+        Returns JSON array of the form: `[{"type": "ID"},{"type": "ID"}]`
+        """
         items_array = []
         groups_names = [item.strip() for item in data.split(',')]
         for item in groups_names:
@@ -210,7 +241,10 @@ class ZabbixAddhost():
             items_array.append(itemid)
         return items_array
 
-    def __templates_names_to_IDs(self):
+    def __templates_names_to_IDs(self) -> dict:
+        """
+        Get template names from `.xlsx` and convert them to Zabbix server template IDs 
+        """
         table_templates = []
         for row in self.__hosts:
             template = [item.strip() for item in row['Template'].split(',')]
@@ -232,12 +266,15 @@ class ZabbixAddhost():
             templateids[template['name']] = template['templateid']
         return templateids
 
-    def __groups_names_to_IDs(self):
+    def __groups_names_to_IDs(self) -> dict:
+        """
+        Get group names from `.xlsx` and convert them to Zabbix server group IDs 
+        """
         table_groups = []
         for row in self.__hosts:
-            group = [item.strip() for item in row['Group'].split(',')]
-            table_groups = table_groups + group
-        table_groups = list(dict.fromkeys(table_groups))
+            group = [item.strip() for item in row['Group'].split(',')]      # Делает из строки <list> разделяя элементы через запятую
+            table_groups += group
+        table_groups = list(dict.fromkeys(table_groups))                    # удаляет повторы
         try:
             groups = self.__zbx.hostgroup.get(
                 {
@@ -254,33 +291,10 @@ class ZabbixAddhost():
             groupids[group['name']] = group['groupid']
         return groupids
 
-    def __create_interface(self, type, ip, dns, port, community_ver, community):
+    def __create_interface(self, type, ip, dns, port, community_ver, community) -> list:
         """
-        "type": 1,                  1 - Agent,              2 - SNMP
-        "main": 1,                  1 - default interface   0 - not default interface
-        "useip": 1,                 1 - IP,                 0 - DNS
-        "ip": "192.168.3.1",        IP address
-        "dns": "",                  DNS name
-        "port": "10050"             Port
-        "details": {                for SNMP connections
-            "version": 2,           SNMP version:           1 - SNMPv1;     2 - SNMPv2c;      3 - SNMPv3.
-            "bulk": 0,              1 - (default) - use bulk requests.      0 - don't use bulk requests;
-            "community" : "public"	SNMP community
-        }
+        Create list of interfaces
         """
-
-        '''
-"interfaces": [
-    {
-        "type": f"{2 if host['Type (Agent/SNMP)'] == 2 or host['Type (Agent/SNMP)'] == 'SNMP' else 1}",     #1 - agent, 2 - SNMP; добавить текстовое описание     host['Type (Agent/SNMP)']
-        "main": 1,                          
-        "useip": f"{0 if host['DNS'] != '' else 1}",                                                        #0 - vonnect via DNS; 1 - connect via IP 
-        "ip": host['IP address'],                                                                           #IP адрес 
-        "dns": host['DNS'],                                                                                 #DNS имя
-        "port": host['Port']                                                                                #Порт мониторинга
-    }
-],
-        '''
         interfaces = []
         int_type = 2 if type == 2 or type == 'SNMP' else 1
         useip = 0 if dns != '' else 1
