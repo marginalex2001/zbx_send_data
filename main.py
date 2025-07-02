@@ -1,21 +1,20 @@
 from zabbix_utils import ZabbixAPI
 import os
-from dotenv import load_dotenv
 import pandas as pd
 import json
 
 def main():
-    load_dotenv()
     API_TOKEN = os.getenv("API_TOKEN")                                              #Получение токена из .env
     ZABBIX_IP = os.getenv("ZABBIX_URL")                                             #Получение IP адреса из .env
     TABLE = os.getenv("TABLE_NAME")                                                 #Получение имени таблицы из .env
+    print(TABLE)
     try:
         table = pd.read_excel(TABLE)
     except Exception as e:
         print(f"Error: {e} \n---BREAK---")
         return 1
     a = ZabbixAddhost(API_TOKEN,ZABBIX_IP,table,TABLE)
-    a.create_host()
+    a.get_hosts()
 
 class ZabbixAddhost():
     def __init__(self, api_token, api_url, table, tablename):
@@ -28,7 +27,120 @@ class ZabbixAddhost():
         self.__templateids = self.__templates_names_to_IDs()
         self.__tablename = tablename
 
-    def prnt(self):
+    def get_hosts(self):
+        """
+        Hostname,       Group,          Status
+        IP Address,     DNS,            Port
+        Inerface type,  (community),    (SNMP ver)
+        Template,       Hostid
+        Inventory [
+        Type, Model, OS, Inv, MAC, Location, S/N
+        ]
+        """
+        src_data = self.__zbx.host.get ({
+            #           Hostname  hostid    
+            "output" : ["name", "hostid", "status"],
+            #                   groupid
+            "selectHostGroups" : ["name"],
+            #                       Template
+            "selectParentTemplates" : ["name"],
+            "selectInterfaces" : ["ip", "dns", "port",
+                                # SNMP/Agent,   if SNMP, community and version
+                                  "type", "details"],
+            "selectInventory": ["os", "macaddress_a", "model", "tag", "type", "serialno_a", "location"]
+        })
+        to_table_data = self.__preparing_to_xlsx(src=src_data)
+        df_new_data = pd.DataFrame(to_table_data)
+        self.__table['hostid'] = self.__table['hostid'].astype(int)
+        df_new_data['hostid'] = df_new_data['hostid'].astype(int)
+        df_new_data_unique = df_new_data[~df_new_data['hostid'].isin(self.__table['hostid'])]
+        if df_new_data_unique.empty ==False:
+            self.__table = pd.concat([self.__table, df_new_data_unique], ignore_index=True)
+            self.__table.to_excel(self.__tablename, index=False)
+        
+
+
+    def __preparing_to_xlsx(self, src):
+        result = []
+        # print(json.dumps(src,sort_keys=True, indent=4))
+        for host in src:
+            hostid, name, status = host['hostid'], host['name'], str()
+            if host['status'] == '0':
+                status = 'Enabled'
+            elif host['status'] == '1':
+                status = 'Disabled'
+            hostgroups = {g['name'] for g in host['hostgroups']} # host['hostgroups']
+            # print(f"{hostgroups_str}\n{hostid}\n{name}\n{status}\n\n") #{host['inventory'] if host['inventory'] else 'oups'}\n")
+            ips, int_type, ports, dnss = [], [], [], []
+            snmp_community, snmp_version = [], []
+            if host['interfaces']:
+                for interface in host['interfaces']:
+                    if interface['ip']:
+                        ips.append(interface['ip'])
+                    if interface['dns']:
+                        dnss.append(interface['dns'])
+                    if interface['port']:
+                        ports.append(interface['port'])
+                    if interface['type']:
+                        if interface['type'] == '1':
+                            int_type.append('Agent')
+                        elif interface['type'] == '2':
+                            int_type.append('SNMP')
+                        elif interface['type'] == '3':
+                            int_type.append('IPMI')
+                        elif interface['type'] == '4':
+                            int_type.append('JMX')
+                    if interface['details']:
+                        snmp_community.append(interface['details']['community'])
+                        snmp_version.append(interface['details']['version'])
+                        # for detail in interface['details']:
+                        #     print(detail['community'])
+            # print(f"{ips}, {dnss}, {ports}, {int_type}, {snmp_community}, {snmp_version}, {status} \n")
+            if host['parentTemplates']:
+                hosttemplates = {t['name'] for t in host['parentTemplates']}
+            hosttemplates_str = ", ".join(hosttemplates) if hosttemplates else ''
+            hostgroups_str = ", ".join(hostgroups) if hostgroups else ''
+            ips_str = ", ".join(ips) if ips else ''
+            int_type_str = ", ".join(int_type) if int_type else ''
+            ports_str = ", ".join(ports) if ports else ''
+            dns_str = ", ".join(dnss) if dnss else ''
+            snmp_community_str = ", ".join(snmp_community) if snmp_community else ''
+            snmp_version_str = ", ".join(snmp_version) if snmp_version else ''
+            inventory_data = dict()
+            if host['inventory']:
+                inventory = host['inventory']
+                inventory_data['type'] = inventory['type'] if inventory['type'] else ''
+                inventory_data['model'] = inventory['model'] if inventory['model'] else ''
+                inventory_data['tag'] = inventory['tag'] if inventory['tag'] else ''
+                inventory_data['serialno_a'] = inventory['serialno_a'] if inventory['serialno_a'] else ''
+                inventory_data['os'] = inventory['os'] if inventory['os'] else ''
+                inventory_data['macaddress_a'] = inventory['macaddress_a'] if inventory['macaddress_a'] else ''
+                inventory_data['location'] = inventory['location'] if inventory['location'] else ''
+                # print(inventory_data)
+
+            result.append({
+                "Hostname": name,
+                "Group": hostgroups_str,
+                "Status": status,
+                "IP address": ips_str,
+                "DNS": dns_str,
+                "Port": ports_str,
+                "Type (Agent/SNMP)": int_type_str,
+                "Community": snmp_community_str,
+                "SNMP version": snmp_version_str,
+                "Template": hosttemplates_str,
+                "Host type": inventory_data['type'] if host['inventory'] else '',
+                "Host model": inventory_data['model'] if host['inventory'] else '',
+                "OS": inventory_data['os'] if host['inventory'] else '',
+                "Inventory number": inventory_data['tag'] if host['inventory'] else '',  # Используем 'tag' для поля Inv
+                "MAC": inventory_data['macaddress_a'] if host['inventory'] else '',
+                "Rack": inventory_data['location'] if host['inventory'] else '',
+                "Serial number": inventory_data['serialno_a'] if host['inventory'] else '',
+                "hostid": hostid
+            })
+        return result
+
+    def tests(self):
         print(self.__hosts)
         self.__data_to_json()
     
@@ -190,5 +302,5 @@ class ZabbixAddhost():
         interfaces.append(interface)
         return interfaces
 
-if __name__ == "__main__":
+if __name__ == "__main__":  
     main()
