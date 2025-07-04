@@ -8,13 +8,50 @@ def main():
     API_TOKEN = os.getenv("API_TOKEN")                                              #Получение токена из .env
     ZABBIX_IP = os.getenv("ZABBIX_URL")                                             #Получение IP адреса из .env
     TABLE = os.getenv("TABLE_NAME")                                                 #Получение имени таблицы из .env
-    try:
-        table = pd.read_excel(TABLE)
-    except Exception as e:
-        print(f"Error: {e} \n---BREAK---")
-        return 1
-    a = ZabbixAddHost(api_token=API_TOKEN,api_url=ZABBIX_IP,table=table,tablename=TABLE)
-    a.get_hosts()
+    if API_TOKEN == '' or ZABBIX_IP == '':
+        print(colored("ERROR. ZABBIX_API OR API_TOKEN CAN'T BE EMPTY!"))
+        exit()
+    
+    table_exists = True
+
+    if TABLE != '':
+        try:
+            table = pd.read_excel(TABLE)
+        except Exception as e:
+            print(f"ERROR WHILE OPEN TABLE")
+        zbx = ZabbixAddHost(api_token=API_TOKEN,api_url=ZABBIX_IP,tablename=TABLE,table=table)
+    else: 
+        zbx = ZabbixAddHost(api_token=API_TOKEN,api_url=ZABBIX_IP)
+                
+    while True:
+        msg = \
+f"------------------------------------------\n\
+Zabbix create host script:\n\
+Choose option:\n\
+    1 - Get hosts from zabbix server.\n\
+    2 - Upload hosts from table to server.\n\
+    3 - {colored("Exit", 'red')}\n\
+------------------------------------------\n"
+        try:
+            i = int(input(msg))
+        except Exception as e:
+            print (colored("ERROR VALUE. TRY AGAIN.", 'red'))
+            continue
+        if i == 1:
+            tablename = zbx.get_hosts()
+            msg_good = 'All hosts recorded in ' + tablename
+            print(colored(msg_good, 'green'))
+        elif i == 2:
+            zbx.create_hosts()
+            msg_good = 'Hosts uploaded'
+            print(colored(msg_good, 'green'))
+        elif i == 3:
+            print(colored("EXIT", 'red'))
+            return False
+        else:
+            print(colored("ERROR VALUE. TRY AGAIN.", 'red'))
+    
+    # a.get_hosts()
 
 class ZabbixAddHost():
     def __init__(self, api_token: str, api_url: str, tablename: str = "hosts.xlsx", table: pd.DataFrame | None = None):
@@ -65,7 +102,7 @@ class ZabbixAddHost():
                 msg = f"Error: {e}, dataframe not written: {f}"
             print(colored(msg, 'red'))
         
-    def get_hosts(self):
+    def get_hosts(self) -> str:
         """
         Get list of hosts from zabbix server, and write it to `.xlsx`
         """
@@ -79,15 +116,19 @@ class ZabbixAddHost():
         })
         to_table_data = self.__preparing_to_xlsx(src=src_data)
         df_new_data = pd.DataFrame(to_table_data)
-        self.__table['hostid'] = self.__table['hostid'].astype(int)
         df_new_data['hostid'] = df_new_data['hostid'].astype(int)
-        df_new_data_unique = df_new_data[~df_new_data['hostid'].isin(self.__table['hostid'])]       #if hostid in self.__table exist, record remove
+        try:
+            self.__table['hostid'] = self.__table['hostid'].astype(int)
+            df_new_data_unique = df_new_data[~df_new_data['hostid'].isin(self.__table['hostid'])]       #if hostid in self.__table exist, record remove
+        except:
+            df_new_data_unique = df_new_data
         if df_new_data_unique.empty == False:
             self.__table = pd.concat([self.__table, df_new_data_unique], ignore_index=True)
             try:
                 self.__table.to_excel(self.__tablename, index=False)
             except Exception as e:
                 self.__table_write_exception(e)
+        return str(self.__tablename)
         
     def __preparing_to_xlsx(self, src: list) -> list:
         """
@@ -166,7 +207,7 @@ class ZabbixAddHost():
             })
         return result
     
-    def create_host(self):
+    def create_hosts(self):
         """
         Creating host on zabbix server from `.xlsx` file
         """
@@ -308,7 +349,7 @@ class ZabbixAddHost():
         }
         if int_type == 2:
             details = {
-                "version": int(community_ver),
+                "version": int(community_ver) if community_ver else 2,
                 "bulk": 0,
                 "community" : f"{'{$SNMP_COMMUNITY}' if community == '' else community}"
             }

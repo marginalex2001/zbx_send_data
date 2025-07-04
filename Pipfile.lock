@@ -181,12 +181,12 @@
         },
         "zabbix-utils": {
             "hashes": [
-                "sha256:1eb918096dcf1980a975ff72e4449b5d72c605f79842595dedd0f4ceba3b1225",
-                "sha256:3c4a98a24c101d89fd938ebe0ad6c9aaa391ac901f2afb75ae682eea88fb77af"
+                "sha256:1a6a66fc2c1cd3b6bb275031ffd8e394498c3349f14b328f879b09ae7366615d",
+                "sha256:2fdb3873bff1151b744a9cd5664522d398782cdd3a56cc6b998179f5c989e78a"
             ],
             "index": "pypi",
             "markers": "python_version >= '3.8'",
-            "version": "==2.0.2"
+            "version": "==2.0.3"
         }
     },
     "develop": {}
